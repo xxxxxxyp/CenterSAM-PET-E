@@ -42,7 +42,10 @@ def load_nifti_xyz(path: str, dtype: np.dtype = np.float32) -> NiftiVolume:
     validates 3D shape, and extracts spacing/affine.
     """
     img = nib.load(path)
-    array_xyz = np.asarray(img.get_fdata(dtype=dtype))
+    if np.issubdtype(dtype, np.floating):
+        array_xyz = np.asarray(img.get_fdata(dtype=dtype))
+    else:
+        array_xyz = np.asarray(img.get_fdata(dtype=np.float32)).astype(dtype, copy=False)
     if array_xyz.ndim != 3:
         raise ValueError(f"Expected 3D volume, got shape {array_xyz.shape} for {path}")
     shape_xyz = (int(array_xyz.shape[0]), int(array_xyz.shape[1]), int(array_xyz.shape[2]))

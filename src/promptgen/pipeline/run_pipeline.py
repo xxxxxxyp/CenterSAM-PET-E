@@ -2,17 +2,42 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..common.instances import extract_lesion_instances_xyz
 from ..common.io import load_case_volumes
 from ..data.case_index import CaseRecord
 from ..frontend.dummy import dummy_from_label_centers, dummy_random_centers
+from ..frontend.peaks import extract_topk_peaks_3d_xyz
+from ..frontend.centernet.infer import infer_heatmap_xyz
 from ..prompt.box_generator import generate_fixed_multiscale_boxes
+from ..classifier.infer import infer_classifier_scores
+from ..prompt.diversify import diversify_by_grid_cell
 from ..prompt.select_k import select_prompts_recall_first
 from .formats import Prompt, PromptFile, save_prompts_json, clamp_score_01
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _fuse_scores(
+    hm_scores: list,
+    cls_scores: list,
+    w_cls: float,
+) -> list:
+    """Fuse heatmap and classifier scores with clamping.
+
+    Inputs: hm_scores (list), cls_scores (list), w_cls (float).
+    Outputs: list of fused scores in [0,1].
+    Operation: convex combination with clamp_score_01.
+    """
+    if len(hm_scores) != len(cls_scores):
+        raise ValueError("hm_scores and cls_scores must have same length")
+    fused: list = []
+    for hm, cls in zip(hm_scores, cls_scores):
+        fused_score = clamp_score_01(float(w_cls) * float(cls) + (1.0 - float(w_cls)) * float(hm))
+        fused.append(fused_score)
+    return fused
 
 
 def _build_output_path(output_root: str, case_id: str) -> str:
@@ -29,7 +54,7 @@ def run_case_prompt_generation(
     case: CaseRecord,
     data_root: str,
     output_root: str,
-    frontend_type: str,  # "dummy_from_label"|"dummy_random"
+    frontend_type: str,  # "dummy_from_label"|"dummy_random"|"centernet"
     edge_mm_set: list,
     padding_ratio: float,
     K_min: int,
@@ -37,6 +62,18 @@ def run_case_prompt_generation(
     K_cap_soft: int,
     num_random_centers: int,
     seed: int,
+    model_path: str,
+    N_peaks: int,
+    use_classifier: bool,
+    classifier_model_path: str,
+    w_cls: float,
+    patch_shape_xyz: tuple,
+    config_path: str,
+    config_hash: str,
+    git_commit: Optional[str],
+    use_diversify: bool,
+    eps_mm: float,
+    max_per_cell: int,
 ) -> str:
     """Run prompt generation for a single case and save prompts JSON.
 
@@ -68,6 +105,21 @@ def run_case_prompt_generation(
             seed=seed,
             gating_mask_xyz=gating,
         )
+    elif frontend_type == "centernet":
+        if not model_path:
+            raise ValueError("centernet requires model_path")
+        gating = body_mask.array_xyz.astype(bool) if body_mask is not None else None
+        heatmap_xyz = infer_heatmap_xyz(
+            volume_xyz=image.array_xyz,
+            model_path=model_path,
+            device="cpu",
+        )
+        centers = extract_topk_peaks_3d_xyz(
+            heatmap_xyz=heatmap_xyz,
+            gating_mask_xyz=gating,
+            topk=N_peaks,
+            neighborhood=1,
+        )
     else:
         raise ValueError(f"unsupported frontend_type: {frontend_type}")
 
@@ -80,6 +132,26 @@ def run_case_prompt_generation(
     )
 
     proposals_scored = [(p, float(p.heatmap_score)) for p in proposals]
+    num_after_diversify = len(proposals_scored)
+    if use_classifier:
+        cls_scores = infer_classifier_scores(
+            volume_xyz=image.array_xyz,
+            proposals=proposals,
+            model_path=classifier_model_path,
+            device="cpu",
+            patch_shape_xyz=patch_shape_xyz,
+        )
+        hm_scores = [p.heatmap_score for p in proposals]
+        fused_scores = _fuse_scores(hm_scores=hm_scores, cls_scores=cls_scores, w_cls=w_cls)
+        proposals_scored = list(zip(proposals, fused_scores))
+    if use_diversify:
+        proposals_scored = diversify_by_grid_cell(
+            proposals_scored=proposals_scored,
+            spacing_xyz_mm=image.spacing_xyz_mm,
+            eps_mm=eps_mm,
+            max_per_cell=max_per_cell,
+        )
+        num_after_diversify = len(proposals_scored)
     selected = select_prompts_recall_first(
         proposals_scored=proposals_scored,
         K_min=K_min,
@@ -112,6 +184,10 @@ def run_case_prompt_generation(
         spacing_xyz_mm=image.spacing_xyz_mm,
         prompts=prompts,
         run={
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "config_path": config_path,
+            "config_hash": config_hash,
+            **({"git_commit": git_commit} if git_commit else {}),
             "frontend_type": frontend_type,
             "edge_mm_set": edge_mm_set,
             "padding_ratio": padding_ratio,
@@ -120,6 +196,19 @@ def run_case_prompt_generation(
             "K_cap_soft": K_cap_soft,
             "num_random_centers": num_random_centers,
             "seed": seed,
+            "model_path": model_path,
+            "N_peaks": int(N_peaks),
+            "use_classifier": bool(use_classifier),
+            "classifier_model_path": classifier_model_path,
+            "w_cls": float(w_cls),
+            "patch_shape_xyz": tuple(patch_shape_xyz),
+            "use_diversify": bool(use_diversify),
+            "eps_mm": float(eps_mm),
+            "max_per_cell": int(max_per_cell),
+            "num_centers": int(len(centers)),
+            "num_proposals_generated": int(len(proposals)),
+            "num_after_diversify": int(num_after_diversify),
+            "K_out": int(len(prompts)),
         },
     )
 
