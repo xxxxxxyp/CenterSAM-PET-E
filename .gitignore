@@ -37,6 +37,7 @@ venv.bak/
 # Data
 data/raw/
 data/processed/
+data/splits/
 *.nii
 *.nii.gz
 
