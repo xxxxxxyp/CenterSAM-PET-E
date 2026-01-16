@@ -84,8 +84,10 @@ def main() -> None:
     parser.add_argument("--t-min", type=float, default=0.05)
     parser.add_argument("--K-cap-soft", type=int, default=200)
     parser.add_argument("--num-random-centers", type=int, default=500)
-    parser.add_argument("--model-path", default="models/frontend/model.pth")
-    parser.add_argument("--N-peaks", type=int, default=1000)
+    parser.add_argument("--centernet-checkpoint-path", default="models/frontend/centernet.pt")
+    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--amp", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--n-peaks", type=int, default=1000)
     parser.add_argument("--use-classifier", type=int, choices=[0, 1], default=0)
     parser.add_argument("--classifier-model-path", default="models/classifier/model.pth")
     parser.add_argument("--w-cls", type=float, default=0.7)
@@ -111,8 +113,10 @@ def main() -> None:
         "t_min": args.t_min,
         "K_cap_soft": args.K_cap_soft,
         "num_random_centers": args.num_random_centers,
-        "model_path": args.model_path,
-        "N_peaks": args.N_peaks,
+        "centernet_checkpoint_path": args.centernet_checkpoint_path,
+        "device": args.device,
+        "amp": args.amp,
+        "n_peaks": args.n_peaks,
         "use_classifier": args.use_classifier,
         "classifier_model_path": args.classifier_model_path,
         "w_cls": args.w_cls,
@@ -154,8 +158,10 @@ def main() -> None:
                 K_cap_soft=args.K_cap_soft,
                 num_random_centers=args.num_random_centers,
                 seed=args.seed,
-                model_path=args.model_path,
-                N_peaks=args.N_peaks,
+                centernet_checkpoint_path=args.centernet_checkpoint_path,
+                device=args.device,
+                amp=bool(args.amp),
+                n_peaks=args.n_peaks,
                 use_classifier=bool(args.use_classifier),
                 classifier_model_path=args.classifier_model_path,
                 w_cls=args.w_cls,

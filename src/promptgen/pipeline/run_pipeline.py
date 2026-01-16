@@ -5,6 +5,8 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
+import numpy as np
+
 from ..common.instances import extract_lesion_instances_xyz
 from ..common.io import load_case_volumes
 from ..data.case_index import CaseRecord
@@ -62,8 +64,10 @@ def run_case_prompt_generation(
     K_cap_soft: int,
     num_random_centers: int,
     seed: int,
-    model_path: str,
-    N_peaks: int,
+    centernet_checkpoint_path: str,
+    device: str,
+    amp: bool,
+    n_peaks: int,
     use_classifier: bool,
     classifier_model_path: str,
     w_cls: float,
@@ -93,6 +97,7 @@ def run_case_prompt_generation(
     if label is not None:
         num_gt_lesions = len(extract_lesion_instances_xyz(label.array_xyz))
 
+    heatmap_stats = None
     if frontend_type == "dummy_from_label":
         if label is None:
             raise ValueError("dummy_from_label requires label_path")
@@ -106,18 +111,24 @@ def run_case_prompt_generation(
             gating_mask_xyz=gating,
         )
     elif frontend_type == "centernet":
-        if not model_path:
-            raise ValueError("centernet requires model_path")
+        if not centernet_checkpoint_path:
+            raise ValueError("centernet requires centernet_checkpoint_path")
         gating = body_mask.array_xyz.astype(bool) if body_mask is not None else None
         heatmap_xyz = infer_heatmap_xyz(
             volume_xyz=image.array_xyz,
-            model_path=model_path,
-            device="cpu",
+            checkpoint_path=centernet_checkpoint_path,
+            device=device,
+            amp=amp,
         )
+        heatmap_stats = {
+            "min": float(np.min(heatmap_xyz)),
+            "max": float(np.max(heatmap_xyz)),
+            "mean": float(np.mean(heatmap_xyz)),
+        }
         centers = extract_topk_peaks_3d_xyz(
             heatmap_xyz=heatmap_xyz,
             gating_mask_xyz=gating,
-            topk=N_peaks,
+            topk=n_peaks,
             neighborhood=1,
         )
     else:
@@ -189,6 +200,11 @@ def run_case_prompt_generation(
             "config_hash": config_hash,
             **({"git_commit": git_commit} if git_commit else {}),
             "frontend_type": frontend_type,
+            "centernet_checkpoint_path": centernet_checkpoint_path,
+            "device": device,
+            "amp": bool(amp),
+            "n_peaks": int(n_peaks),
+            **({"heatmap_stats": heatmap_stats} if heatmap_stats is not None else {}),
             "edge_mm_set": edge_mm_set,
             "padding_ratio": padding_ratio,
             "K_min": K_min,
@@ -196,8 +212,6 @@ def run_case_prompt_generation(
             "K_cap_soft": K_cap_soft,
             "num_random_centers": num_random_centers,
             "seed": seed,
-            "model_path": model_path,
-            "N_peaks": int(N_peaks),
             "use_classifier": bool(use_classifier),
             "classifier_model_path": classifier_model_path,
             "w_cls": float(w_cls),
@@ -205,6 +219,7 @@ def run_case_prompt_generation(
             "use_diversify": bool(use_diversify),
             "eps_mm": float(eps_mm),
             "max_per_cell": int(max_per_cell),
+            "num_peaks": int(len(centers)),
             "num_centers": int(len(centers)),
             "num_proposals_generated": int(len(proposals)),
             "num_after_diversify": int(num_after_diversify),
